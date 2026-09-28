@@ -1,7 +1,7 @@
 {
   "name": "hrrymodsonline-otp-gateway",
   "version": "1.0.0",
-  "description": "4 digit email OTP gateway",
+  "description": "hrrymodsonline 4 digit email OTP gateway",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
