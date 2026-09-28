@@ -1,5 +1,4 @@
 const express = require("express");
-const nodemailer = require("nodemailer");
 const cors = require("cors");
 const crypto = require("crypto");
 
@@ -7,35 +6,38 @@ const app = express();
 
 const PORT = process.env.PORT || 10000;
 
-/* ================================
-   SETTINGS
-================================ */
+/* =================================
+   BREVO CONFIG
+================================= */
 
-const SMTP_USER =
-  (process.env.SMTP_USER || "").trim();
+const BREVO_API_KEY =
+  (process.env.BREVO_API_KEY || "").trim();
 
-const SMTP_PASS =
-  (process.env.SMTP_PASS || "")
-    .replace(/\s/g, "");
+const BREVO_SENDER_EMAIL =
+  (process.env.BREVO_SENDER_EMAIL || "").trim();
 
-const OTP_EXPIRY =
-  5 * 60 * 1000;
+const BREVO_SENDER_NAME =
+  (process.env.BREVO_SENDER_NAME || "hrrymodsonline").trim();
 
-const RESEND_COOLDOWN =
-  30 * 1000;
+
+/* =================================
+   OTP CONFIG
+================================= */
+
+const OTP_EXPIRY = 5 * 60 * 1000;
+
+const RESEND_COOLDOWN = 30 * 1000;
 
 const MAX_ATTEMPTS = 5;
 
-const RATE_WINDOW =
-  60 * 1000;
+const RATE_WINDOW = 60 * 1000;
 
-const MAX_REQUESTS =
-  10;
+const MAX_REQUESTS = 10;
 
 
-/* ================================
+/* =================================
    MIDDLEWARE
-================================ */
+================================= */
 
 app.use(
   express.json({
@@ -47,82 +49,51 @@ app.use(
   cors({
     origin: "*",
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Accept"]
+    allowedHeaders: [
+      "Content-Type",
+      "Accept"
+    ]
   })
 );
 
 
-/* ================================
+/* =================================
    STORAGE
-================================ */
+================================= */
 
 const otpStore = new Map();
+
 const ipStore = new Map();
 
 
-/* ================================
-   GMAIL SMTP
-================================ */
-
-const transporter =
-  nodemailer.createTransport({
-
-    host: "smtp.gmail.com",
-
-    port: 465,
-
-    secure: true,
-
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS
-    },
-
-    connectionTimeout: 15000,
-
-    greetingTimeout: 15000,
-
-    socketTimeout: 20000
-
-  });
-
-
-/* ================================
+/* =================================
    HELPERS
-================================ */
+================================= */
 
 function normalizeEmail(email) {
-
   return String(email || "")
     .trim()
     .toLowerCase();
-
 }
 
 
 function validEmail(email) {
-
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
 }
 
 
 function generateOTP() {
-
   return crypto
     .randomInt(1000, 10000)
     .toString();
-
 }
 
 
 function hashOTP(otp) {
-
   return crypto
     .createHash("sha256")
     .update(otp)
     .digest("hex");
-
 }
 
 
@@ -132,21 +103,14 @@ function getIP(req) {
     req.headers["x-forwarded-for"];
 
   if (forwarded) {
-
     return forwarded
       .split(",")[0]
       .trim();
-
   }
 
   return req.socket.remoteAddress || "unknown";
-
 }
 
-
-/* ================================
-   RATE LIMIT
-================================ */
 
 function allowedRequest(req) {
 
@@ -167,19 +131,202 @@ function allowedRequest(req) {
     };
 
     ipStore.set(ip, record);
-
   }
 
   record.count++;
 
   return record.count <= MAX_REQUESTS;
-
 }
 
 
-/* ================================
+/* =================================
+   BREVO CONFIG CHECK
+================================= */
+
+function brevoConfigured() {
+
+  return Boolean(
+    BREVO_API_KEY &&
+    BREVO_SENDER_EMAIL
+  );
+}
+
+
+/* =================================
+   SEND EMAIL THROUGH BREVO API
+================================= */
+
+async function sendBrevoOTP(email, otp) {
+
+  const htmlContent = `
+
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+content="width=device-width,initial-scale=1.0">
+
+</head>
+
+<body
+style="
+margin:0;
+padding:25px 15px;
+background:#f3f4f6;
+font-family:Arial,Helvetica,sans-serif;
+"
+>
+
+<div
+style="
+max-width:500px;
+margin:0 auto;
+background:#ffffff;
+border-radius:20px;
+padding:30px 20px;
+text-align:center;
+box-shadow:0 5px 25px rgba(0,0,0,0.08);
+"
+>
+
+<h2
+style="
+margin:0 0 10px;
+color:#111111;
+font-size:24px;
+"
+>
+hrrymodsonline
+</h2>
+
+<p
+style="
+margin:0;
+color:#666666;
+font-size:15px;
+"
+>
+Your email verification OTP is
+</p>
+
+<div
+style="
+margin:25px 0;
+padding:18px;
+background:#f5f5f5;
+border-radius:15px;
+font-size:38px;
+font-weight:800;
+letter-spacing:12px;
+color:#111111;
+"
+>
+${otp}
+</div>
+
+<p
+style="
+margin:0;
+color:#666666;
+font-size:14px;
+"
+>
+This OTP will expire in 5 minutes.
+</p>
+
+<p
+style="
+margin-top:20px;
+font-size:12px;
+color:#999999;
+"
+>
+Do not share this OTP with anyone.
+</p>
+
+</div>
+
+</body>
+
+</html>
+
+`;
+
+
+  const response = await fetch(
+    "https://api.brevo.com/v3/smtp/email",
+    {
+
+      method: "POST",
+
+      headers: {
+        "accept": "application/json",
+        "api-key": BREVO_API_KEY,
+        "content-type": "application/json"
+      },
+
+      body: JSON.stringify({
+
+        sender: {
+          name: BREVO_SENDER_NAME,
+          email: BREVO_SENDER_EMAIL
+        },
+
+        to: [
+          {
+            email: email
+          }
+        ],
+
+        subject:
+          "Your hrrymodsonline OTP",
+
+        htmlContent: htmlContent
+
+      })
+
+    }
+  );
+
+
+  const data =
+    await response.json()
+      .catch(() => ({}));
+
+
+  if (!response.ok) {
+
+    console.error(
+      "BREVO ERROR:",
+      response.status,
+      data
+    );
+
+    const error =
+      new Error(
+        data.message ||
+        "Brevo email sending failed."
+      );
+
+    error.status =
+      response.status;
+
+    throw error;
+  }
+
+
+  return data;
+}
+
+
+/* =================================
    ROOT
-================================ */
+================================= */
 
 app.get("/", (req, res) => {
 
@@ -187,90 +334,76 @@ app.get("/", (req, res) => {
 
     status: "online",
 
-    gateway: "hrrymodsonline",
+    gateway:
+      "hrrymodsonline",
 
-    service: "Email OTP Gateway"
+    service:
+      "Brevo API OTP Gateway",
+
+    sender:
+      BREVO_SENDER_EMAIL ||
+      "NOT SET"
 
   });
 
 });
 
 
-/* ================================
-   HEALTH / SMTP CHECK
-================================ */
+/* =================================
+   HEALTH
+================================= */
 
-app.get("/health", async (req, res) => {
+app.get(
+  "/health",
+  async (req, res) => {
 
-  try {
-
-    if (!SMTP_USER || !SMTP_PASS) {
+    if (!brevoConfigured()) {
 
       return res.status(500).json({
 
         ok: false,
 
-        smtpConfigured: false,
+        brevoConfigured: false,
 
         message:
-          "SMTP_USER or SMTP_PASS is missing in Render Environment Variables."
+          "Brevo Environment Variables are missing."
 
       });
 
     }
 
-    await transporter.verify();
 
     return res.json({
 
       ok: true,
 
-      smtpConfigured: true,
+      brevoConfigured: true,
 
-      smtpConnected: true,
-
-      message:
-        "Gmail SMTP connection is working."
-
-    });
-
-  } catch (error) {
-
-    console.error(
-      "SMTP HEALTH ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-
-      ok: false,
-
-      smtpConfigured: true,
-
-      smtpConnected: false,
-
-      errorCode:
-        error.code || "UNKNOWN",
+      sender:
+        BREVO_SENDER_EMAIL,
 
       message:
-        "Gmail SMTP connection failed. Check the Gmail App Password and Render Environment Variables."
+        "Brevo API configuration is ready."
 
     });
 
   }
+);
 
-});
 
-
-/* ================================
+/* =================================
    SEND OTP
-================================ */
+================================= */
 
 app.post(
   "/api/send-otp",
   async (req, res) => {
 
     try {
+
+      /* =========================
+         RATE LIMIT
+      ========================= */
 
       if (!allowedRequest(req)) {
 
@@ -285,6 +418,10 @@ app.post(
 
       }
 
+
+      /* =========================
+         EMAIL
+      ========================= */
 
       const email =
         normalizeEmail(
@@ -306,7 +443,27 @@ app.post(
       }
 
 
-      /* Check resend cooldown */
+      /* =========================
+         BREVO CHECK
+      ========================= */
+
+      if (!brevoConfigured()) {
+
+        return res.status(500).json({
+
+          success: false,
+
+          message:
+            "Brevo API is not configured in Render."
+
+        });
+
+      }
+
+
+      /* =========================
+         RESEND COOLDOWN
+      ========================= */
 
       const old =
         otpStore.get(email);
@@ -317,6 +474,7 @@ app.post(
         const elapsed =
           Date.now() -
           old.createdAt;
+
 
         if (
           elapsed <
@@ -330,6 +488,7 @@ app.post(
                 elapsed
               ) / 1000
             );
+
 
           return res.status(429).json({
 
@@ -345,54 +504,52 @@ app.post(
       }
 
 
-      /* Check Gmail configuration */
-
-      if (!SMTP_USER || !SMTP_PASS) {
-
-        return res.status(500).json({
-
-          success: false,
-
-          message:
-            "Gmail SMTP is not configured in Render. Add SMTP_USER and SMTP_PASS."
-
-        });
-
-      }
-
-
-      /* Test SMTP before generating OTP */
-
-      try {
-
-        await transporter.verify();
-
-      } catch (smtpError) {
-
-        console.error(
-          "GMAIL SMTP ERROR:",
-          smtpError
-        );
-
-        return res.status(500).json({
-
-          success: false,
-
-          message:
-            "Gmail authentication failed. Please create a new Gmail App Password and update SMTP_PASS in Render."
-
-        });
-
-      }
-
-
-      /* Generate OTP */
+      /* =========================
+         GENERATE OTP
+      ========================= */
 
       const otp =
         generateOTP();
 
 
-      /* Save hashed OTP */
+      /* =========================
+         SEND EMAIL
+      ========================= */
+
+      try {
+
+        await sendBrevoOTP(
+          email,
+          otp
+        );
+
+      } catch (mailError) {
+
+        console.error(
+          "BREVO SEND ERROR:",
+          mailError
+        );
+
+
+        return res.status(500).json({
+
+          success: false,
+
+          message:
+            "Unable to send OTP through email service. Please try again later."
+
+        });
+
+      }
+
+
+      /* =========================
+         SAVE OTP
+      ========================= */
+
+      const now =
+        Date.now();
+
 
       otpStore.set(
         email,
@@ -402,127 +559,16 @@ app.post(
             hashOTP(otp),
 
           createdAt:
-            Date.now(),
+            now,
 
           expiresAt:
-            Date.now() +
+            now +
             OTP_EXPIRY,
 
           attempts: 0
 
         }
       );
-
-
-      /* Send email */
-
-      try {
-
-        await transporter.sendMail({
-
-          from:
-            `"hrrymodsonline" <${SMTP_USER}>`,
-
-          to: email,
-
-          subject:
-            "Your hrrymodsonline OTP",
-
-          text:
-`Your hrrymodsonline verification OTP is: ${otp}
-
-This OTP is valid for 5 minutes.
-
-Do not share this OTP with anyone.`,
-
-          html: `
-
-<!DOCTYPE html>
-
-<html>
-
-<body
-style="
-margin:0;
-padding:20px;
-background:#f3f3f3;
-font-family:Arial,sans-serif;
-"
->
-
-<div
-style="
-max-width:500px;
-margin:auto;
-background:white;
-border-radius:18px;
-padding:30px;
-text-align:center;
-"
->
-
-<h2 style="color:#111;">
-hrrymodsonline
-</h2>
-
-<p style="color:#555;">
-Your email verification OTP is:
-</p>
-
-<div
-style="
-font-size:38px;
-font-weight:bold;
-letter-spacing:12px;
-padding:20px;
-background:#f5f5f5;
-border-radius:14px;
-color:#111;
-margin:20px 0;
-"
->
-
-${otp}
-
-</div>
-
-<p style="color:#777;">
-This OTP expires in 5 minutes.
-</p>
-
-<p style="font-size:12px;color:#999;">
-Do not share this OTP with anyone.
-</p>
-
-</div>
-
-</body>
-
-</html>
-
-`
-
-        });
-
-      } catch (mailError) {
-
-        console.error(
-          "MAIL SEND ERROR:",
-          mailError
-        );
-
-        otpStore.delete(email);
-
-        return res.status(500).json({
-
-          success: false,
-
-          message:
-            "Gmail accepted the connection but failed to send the email. Please check the Gmail account/App Password."
-
-        });
-
-      }
 
 
       return res.json({
@@ -534,13 +580,13 @@ Do not share this OTP with anyone.
 
       });
 
-
     } catch (error) {
 
       console.error(
         "SEND OTP ERROR:",
         error
       );
+
 
       return res.status(500).json({
 
@@ -557,15 +603,19 @@ Do not share this OTP with anyone.
 );
 
 
-/* ================================
+/* =================================
    VERIFY OTP
-================================ */
+================================= */
 
 app.post(
   "/api/verify-otp",
   (req, res) => {
 
     try {
+
+      /* =========================
+         RATE LIMIT
+      ========================= */
 
       if (!allowedRequest(req)) {
 
@@ -581,10 +631,15 @@ app.post(
       }
 
 
+      /* =========================
+         INPUT
+      ========================= */
+
       const email =
         normalizeEmail(
           req.body.email
         );
+
 
       const otp =
         String(
@@ -620,6 +675,10 @@ app.post(
       }
 
 
+      /* =========================
+         FIND OTP
+      ========================= */
+
       const record =
         otpStore.get(email);
 
@@ -638,7 +697,9 @@ app.post(
       }
 
 
-      /* Expired */
+      /* =========================
+         EXPIRY
+      ========================= */
 
       if (
         Date.now() >
@@ -659,7 +720,9 @@ app.post(
       }
 
 
-      /* Attempts */
+      /* =========================
+         ATTEMPTS
+      ========================= */
 
       record.attempts++;
 
@@ -683,10 +746,13 @@ app.post(
       }
 
 
-      /* Compare */
+      /* =========================
+         HASH COMPARE
+      ========================= */
 
       const enteredHash =
         hashOTP(otp);
+
 
       const savedHash =
         record.otpHash;
@@ -694,7 +760,7 @@ app.post(
 
       const valid =
         enteredHash.length ===
-        savedHash.length &&
+          savedHash.length &&
         crypto.timingSafeEqual(
           Buffer.from(enteredHash),
           Buffer.from(savedHash)
@@ -715,7 +781,9 @@ app.post(
       }
 
 
-      /* One-time use */
+      /* =========================
+         SUCCESS
+      ========================= */
 
       otpStore.delete(email);
 
@@ -731,13 +799,13 @@ app.post(
 
       });
 
-
     } catch (error) {
 
       console.error(
         "VERIFY ERROR:",
         error
       );
+
 
       return res.status(500).json({
 
@@ -754,9 +822,9 @@ app.post(
 );
 
 
-/* ================================
+/* =================================
    UNKNOWN API
-================================ */
+================================= */
 
 app.use(
   "/api",
@@ -775,15 +843,18 @@ app.use(
 );
 
 
-/* ================================
+/* =================================
    CLEANUP
-================================ */
+================================= */
 
 setInterval(
   () => {
 
-    const now = Date.now();
+    const now =
+      Date.now();
 
+
+    /* OTP CLEANUP */
 
     for (
       const [
@@ -804,6 +875,8 @@ setInterval(
 
     }
 
+
+    /* IP CLEANUP */
 
     for (
       const [
@@ -830,9 +903,9 @@ setInterval(
 );
 
 
-/* ================================
-   START
-================================ */
+/* =================================
+   START SERVER
+================================= */
 
 app.listen(
   PORT,
@@ -843,7 +916,7 @@ app.listen(
     );
 
     console.log(
-      "hrrymodsonline OTP Gateway"
+      "HRRYMODSONLINE BREVO OTP"
     );
 
     console.log(
@@ -852,13 +925,14 @@ app.listen(
     );
 
     console.log(
-      "SMTP User:",
-      SMTP_USER || "NOT SET"
+      "Brevo Sender:",
+      BREVO_SENDER_EMAIL ||
+      "NOT SET"
     );
 
     console.log(
-      "SMTP Password:",
-      SMTP_PASS
+      "Brevo API Key:",
+      BREVO_API_KEY
         ? "SET"
         : "NOT SET"
     );
