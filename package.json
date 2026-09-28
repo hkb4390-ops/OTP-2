@@ -1,14 +1,13 @@
 {
   "name": "hrrymodsonline-otp-gateway",
-  "version": "1.0.0",
-  "description": "hrrymodsonline 4 digit email OTP gateway",
+  "version": "3.0.0",
+  "description": "HRRYMODSONLINE OTP Gateway using Brevo API",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.21.2",
-    "nodemailer": "^6.9.16"
+    "express": "^4.21.2"
   }
 }
