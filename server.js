@@ -7,128 +7,91 @@ const app = express();
 
 const PORT = process.env.PORT || 10000;
 
-
-/*
-==================================================
-CONFIG
-==================================================
-*/
+/* ================================
+   SETTINGS
+================================ */
 
 const SMTP_USER =
-  process.env.SMTP_USER;
+  (process.env.SMTP_USER || "").trim();
 
 const SMTP_PASS =
-  process.env.SMTP_PASS;
-
-
-/*
-OTP validity:
-5 minutes
-*/
+  (process.env.SMTP_PASS || "")
+    .replace(/\s/g, "");
 
 const OTP_EXPIRY =
   5 * 60 * 1000;
 
-
-/*
-Resend:
-30 seconds
-*/
-
 const RESEND_COOLDOWN =
   30 * 1000;
 
-
-/*
-Maximum wrong OTP attempts
-*/
-
 const MAX_ATTEMPTS = 5;
-
-
-/*
-Basic IP rate limit
-*/
 
 const RATE_WINDOW =
   60 * 1000;
 
-const MAX_IP_REQUESTS = 10;
+const MAX_REQUESTS =
+  10;
 
 
-/*
-==================================================
-STARTUP CHECK
-==================================================
-*/
-
-if(!SMTP_USER || !SMTP_PASS){
-
-  console.error(
-    "WARNING: SMTP_USER or SMTP_PASS is missing."
-  );
-
-}
-
-
-/*
-==================================================
-MIDDLEWARE
-==================================================
-*/
+/* ================================
+   MIDDLEWARE
+================================ */
 
 app.use(
   express.json({
-    limit:"10kb"
+    limit: "10kb"
   })
 );
-
 
 app.use(
   cors({
-    origin:"*",
-
-    methods:[
-      "GET",
-      "POST",
-      "OPTIONS"
-    ],
-
-    allowedHeaders:[
-      "Content-Type",
-      "Accept"
-    ]
+    origin: "*",
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Accept"]
   })
 );
 
 
-/*
-==================================================
-OTP MEMORY
-==================================================
-*/
+/* ================================
+   STORAGE
+================================ */
 
-const otpStore =
-  new Map();
+const otpStore = new Map();
+const ipStore = new Map();
 
 
-/*
-==================================================
-IP RATE LIMIT MEMORY
-==================================================
-*/
+/* ================================
+   GMAIL SMTP
+================================ */
 
-const ipStore =
-  new Map();
+const transporter =
+  nodemailer.createTransport({
+
+    host: "smtp.gmail.com",
+
+    port: 465,
+
+    secure: true,
+
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS
+    },
+
+    connectionTimeout: 15000,
+
+    greetingTimeout: 15000,
+
+    socketTimeout: 20000
+
+  });
 
 
-/*
-==================================================
-EMAIL VALIDATION
-==================================================
-*/
+/* ================================
+   HELPERS
+================================ */
 
-function normalizeEmail(email){
+function normalizeEmail(email) {
 
   return String(email || "")
     .trim()
@@ -137,39 +100,23 @@ function normalizeEmail(email){
 }
 
 
-function validEmail(email){
+function validEmail(email) {
 
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    .test(email);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 }
 
 
-/*
-==================================================
-GENERATE 4 DIGIT OTP
-==================================================
-*/
-
-function generateOTP(){
+function generateOTP() {
 
   return crypto
-    .randomInt(
-      1000,
-      10000
-    )
+    .randomInt(1000, 10000)
     .toString();
 
 }
 
 
-/*
-==================================================
-HASH OTP
-==================================================
-*/
-
-function hashOTP(otp){
+function hashOTP(otp) {
 
   return crypto
     .createHash("sha256")
@@ -179,18 +126,12 @@ function hashOTP(otp){
 }
 
 
-/*
-==================================================
-GET IP
-==================================================
-*/
-
-function getIP(req){
+function getIP(req) {
 
   const forwarded =
     req.headers["x-forwarded-for"];
 
-  if(forwarded){
+  if (forwarded) {
 
     return forwarded
       .split(",")[0]
@@ -198,182 +139,152 @@ function getIP(req){
 
   }
 
-  return (
-    req.socket.remoteAddress ||
-    "unknown"
-  );
+  return req.socket.remoteAddress || "unknown";
 
 }
 
 
-/*
-==================================================
-RATE LIMIT
-==================================================
-*/
+/* ================================
+   RATE LIMIT
+================================ */
 
-function allowedRequest(req){
+function allowedRequest(req) {
 
-  const ip =
-    getIP(req);
+  const ip = getIP(req);
 
-  const now =
-    Date.now();
+  const now = Date.now();
 
+  let record = ipStore.get(ip);
 
-  let record =
-    ipStore.get(ip);
-
-
-  if(
+  if (
     !record ||
-    now - record.start >
-    RATE_WINDOW
-  ){
+    now - record.start > RATE_WINDOW
+  ) {
 
     record = {
-
-      start:now,
-
-      count:0
-
+      start: now,
+      count: 0
     };
 
-
-    ipStore.set(
-      ip,
-      record
-    );
+    ipStore.set(ip, record);
 
   }
-
 
   record.count++;
 
-
-  if(
-    record.count >
-    MAX_IP_REQUESTS
-  ){
-
-    return false;
-
-  }
-
-
-  return true;
+  return record.count <= MAX_REQUESTS;
 
 }
 
 
-/*
-==================================================
-GMAIL
-==================================================
-*/
+/* ================================
+   ROOT
+================================ */
 
-const transporter =
-  nodemailer.createTransport({
+app.get("/", (req, res) => {
 
-    service:"gmail",
+  res.json({
 
-    auth:{
+    status: "online",
 
-      user:SMTP_USER,
+    gateway: "hrrymodsonline",
 
-      pass:SMTP_PASS
-
-    }
+    service: "Email OTP Gateway"
 
   });
 
+});
 
-/*
-==================================================
-ROOT
-==================================================
-*/
 
-app.get(
-  "/",
-  (req,res)=>{
+/* ================================
+   HEALTH / SMTP CHECK
+================================ */
 
-    res.status(200).json({
+app.get("/health", async (req, res) => {
 
-      status:"online",
+  try {
 
-      gateway:
-        "hrrymodsonline",
+    if (!SMTP_USER || !SMTP_PASS) {
 
-      service:
-        "Email OTP Gateway"
+      return res.status(500).json({
+
+        ok: false,
+
+        smtpConfigured: false,
+
+        message:
+          "SMTP_USER or SMTP_PASS is missing in Render Environment Variables."
+
+      });
+
+    }
+
+    await transporter.verify();
+
+    return res.json({
+
+      ok: true,
+
+      smtpConfigured: true,
+
+      smtpConnected: true,
+
+      message:
+        "Gmail SMTP connection is working."
+
+    });
+
+  } catch (error) {
+
+    console.error(
+      "SMTP HEALTH ERROR:",
+      error
+    );
+
+    return res.status(500).json({
+
+      ok: false,
+
+      smtpConfigured: true,
+
+      smtpConnected: false,
+
+      errorCode:
+        error.code || "UNKNOWN",
+
+      message:
+        "Gmail SMTP connection failed. Check the Gmail App Password and Render Environment Variables."
 
     });
 
   }
-);
+
+});
 
 
-/*
-==================================================
-HEALTH
-==================================================
-*/
-
-app.get(
-  "/health",
-  (req,res)=>{
-
-    res.status(200).json({
-
-      ok:true,
-
-      gateway:
-        "hrrymodsonline"
-
-    });
-
-  }
-);
-
-
-/*
-==================================================
-SEND OTP
-==================================================
-*/
+/* ================================
+   SEND OTP
+================================ */
 
 app.post(
   "/api/send-otp",
-  async(req,res)=>{
+  async (req, res) => {
 
-    try{
+    try {
 
-      /*
-      IP protection
-      */
+      if (!allowedRequest(req)) {
 
-      if(
-        !allowedRequest(req)
-      ){
+        return res.status(429).json({
 
-        return res
-          .status(429)
-          .json({
+          success: false,
 
-            success:false,
+          message:
+            "Too many requests. Please try again later."
 
-            message:
-              "Too many requests. Please try again later."
-
-          });
+        });
 
       }
 
-
-      /*
-      Email
-      */
 
       const email =
         normalizeEmail(
@@ -381,47 +292,36 @@ app.post(
         );
 
 
-      /*
-      Validate
-      */
+      if (!validEmail(email)) {
 
-      if(
-        !validEmail(email)
-      ){
+        return res.status(400).json({
 
-        return res
-          .status(400)
-          .json({
+          success: false,
 
-            success:false,
+          message:
+            "Please enter a valid email address."
 
-            message:
-              "Please enter a valid email address."
-
-          });
+        });
 
       }
 
 
-      /*
-      Existing OTP
-      */
+      /* Check resend cooldown */
 
-      const oldOTP =
+      const old =
         otpStore.get(email);
 
 
-      if(oldOTP){
+      if (old) {
 
         const elapsed =
           Date.now() -
-          oldOTP.createdAt;
+          old.createdAt;
 
-
-        if(
+        if (
           elapsed <
           RESEND_COOLDOWN
-        ){
+        ) {
 
           const wait =
             Math.ceil(
@@ -431,34 +331,68 @@ app.post(
               ) / 1000
             );
 
+          return res.status(429).json({
 
-          return res
-            .status(429)
-            .json({
+            success: false,
 
-              success:false,
+            message:
+              `Please wait ${wait} seconds before requesting another OTP.`
 
-              message:
-                `Please wait ${wait} seconds before requesting another OTP.`
-
-            });
+          });
 
         }
 
       }
 
 
-      /*
-      Generate
-      */
+      /* Check Gmail configuration */
+
+      if (!SMTP_USER || !SMTP_PASS) {
+
+        return res.status(500).json({
+
+          success: false,
+
+          message:
+            "Gmail SMTP is not configured in Render. Add SMTP_USER and SMTP_PASS."
+
+        });
+
+      }
+
+
+      /* Test SMTP before generating OTP */
+
+      try {
+
+        await transporter.verify();
+
+      } catch (smtpError) {
+
+        console.error(
+          "GMAIL SMTP ERROR:",
+          smtpError
+        );
+
+        return res.status(500).json({
+
+          success: false,
+
+          message:
+            "Gmail authentication failed. Please create a new Gmail App Password and update SMTP_PASS in Render."
+
+        });
+
+      }
+
+
+      /* Generate OTP */
 
       const otp =
         generateOTP();
 
 
-      /*
-      Store hashed OTP
-      */
+      /* Save hashed OTP */
 
       otpStore.set(
         email,
@@ -474,53 +408,45 @@ app.post(
             Date.now() +
             OTP_EXPIRY,
 
-          attempts:0
+          attempts: 0
 
         }
       );
 
 
-      /*
-      Send email
-      */
+      /* Send email */
 
-      await transporter.sendMail({
+      try {
 
-        from:
-          `hrrymodsonline <${SMTP_USER}>`,
+        await transporter.sendMail({
 
-        to:
-          email,
+          from:
+            `"hrrymodsonline" <${SMTP_USER}>`,
 
-        subject:
-          "Your hrrymodsonline OTP",
+          to: email,
 
-        text:
+          subject:
+            "Your hrrymodsonline OTP",
+
+          text:
 `Your hrrymodsonline verification OTP is: ${otp}
 
 This OTP is valid for 5 minutes.
 
 Do not share this OTP with anyone.`,
 
-        html:
+          html: `
 
-`
 <!DOCTYPE html>
 
 <html>
-
-<head>
-
-<meta charset="UTF-8">
-
-</head>
 
 <body
 style="
 margin:0;
 padding:20px;
 background:#f3f3f3;
-font-family:Arial,Helvetica,sans-serif;
+font-family:Arial,sans-serif;
 "
 >
 
@@ -528,36 +454,20 @@ font-family:Arial,Helvetica,sans-serif;
 style="
 max-width:500px;
 margin:auto;
-background:#ffffff;
+background:white;
 border-radius:18px;
 padding:30px;
 text-align:center;
 "
 >
 
-<h2
-style="
-margin:0 0 10px;
-color:#111;
-"
->
-
+<h2 style="color:#111;">
 hrrymodsonline
-
 </h2>
 
-
-<p
-style="
-color:#555;
-font-size:15px;
-"
->
-
+<p style="color:#555;">
 Your email verification OTP is:
-
 </p>
-
 
 <div
 style="
@@ -565,10 +475,10 @@ font-size:38px;
 font-weight:bold;
 letter-spacing:12px;
 padding:20px;
-margin:20px 0;
 background:#f5f5f5;
 border-radius:14px;
 color:#111;
+margin:20px 0;
 "
 >
 
@@ -576,28 +486,12 @@ ${otp}
 
 </div>
 
-
-<p
-style="
-color:#777;
-font-size:14px;
-"
->
-
+<p style="color:#777;">
 This OTP expires in 5 minutes.
-
 </p>
 
-
-<p
-style="
-color:#999;
-font-size:12px;
-"
->
-
+<p style="font-size:12px;color:#999;">
 Do not share this OTP with anyone.
-
 </p>
 
 </div>
@@ -605,60 +499,57 @@ Do not share this OTP with anyone.
 </body>
 
 </html>
+
 `
+
+        });
+
+      } catch (mailError) {
+
+        console.error(
+          "MAIL SEND ERROR:",
+          mailError
+        );
+
+        otpStore.delete(email);
+
+        return res.status(500).json({
+
+          success: false,
+
+          message:
+            "Gmail accepted the connection but failed to send the email. Please check the Gmail account/App Password."
+
+        });
+
+      }
+
+
+      return res.json({
+
+        success: true,
+
+        message:
+          "OTP sent successfully."
 
       });
 
 
-      /*
-      Success
-      */
-
-      return res
-        .status(200)
-        .json({
-
-          success:true,
-
-          message:
-            "OTP sent successfully."
-
-        });
-
-
-    }catch(error){
+    } catch (error) {
 
       console.error(
         "SEND OTP ERROR:",
         error
       );
 
+      return res.status(500).json({
 
-      /*
-      Remove failed OTP
-      */
+        success: false,
 
-      const email =
-        normalizeEmail(
-          req.body.email
-        );
+        message:
+          "OTP server error. Please check Render logs."
 
-
-      otpStore.delete(
-        email
-      );
-
-
-      return res
-        .status(500)
-        .json({
-
-          success:false,
-
-          message:
-            "Unable to send OTP. Please check the Render email configuration."
-
-        });
+      });
 
     }
 
@@ -666,49 +557,34 @@ Do not share this OTP with anyone.
 );
 
 
-/*
-==================================================
-VERIFY OTP
-==================================================
-*/
+/* ================================
+   VERIFY OTP
+================================ */
 
 app.post(
   "/api/verify-otp",
-  (req,res)=>{
+  (req, res) => {
 
-    try{
+    try {
 
-      /*
-      Rate limit
-      */
+      if (!allowedRequest(req)) {
 
-      if(
-        !allowedRequest(req)
-      ){
+        return res.status(429).json({
 
-        return res
-          .status(429)
-          .json({
+          success: false,
 
-            success:false,
+          message:
+            "Too many requests. Please try again later."
 
-            message:
-              "Too many requests. Please try again later."
-
-          });
+        });
 
       }
 
-
-      /*
-      Input
-      */
 
       const email =
         normalizeEmail(
           req.body.email
         );
-
 
       const otp =
         String(
@@ -716,227 +592,161 @@ app.post(
         ).trim();
 
 
-      /*
-      Validate email
-      */
+      if (!validEmail(email)) {
 
-      if(
-        !validEmail(email)
-      ){
+        return res.status(400).json({
 
-        return res
-          .status(400)
-          .json({
+          success: false,
 
-            success:false,
+          message:
+            "Invalid email address."
 
-            message:
-              "Invalid email address."
-
-          });
+        });
 
       }
 
 
-      /*
-      Validate OTP
-      */
+      if (!/^\d{4}$/.test(otp)) {
 
-      if(
-        !/^\d{4}$/.test(otp)
-      ){
+        return res.status(400).json({
 
-        return res
-          .status(400)
-          .json({
+          success: false,
 
-            success:false,
+          message:
+            "OTP must contain exactly 4 digits."
 
-            message:
-              "OTP must contain exactly 4 digits."
-
-          });
+        });
 
       }
 
-
-      /*
-      Find OTP
-      */
 
       const record =
         otpStore.get(email);
 
 
-      if(!record){
+      if (!record) {
 
-        return res
-          .status(400)
-          .json({
+        return res.status(400).json({
 
-            success:false,
+          success: false,
 
-            message:
-              "OTP not found. Please request a new OTP."
+          message:
+            "OTP not found. Please request a new OTP."
 
-          });
+        });
 
       }
 
 
-      /*
-      Expiry
-      */
+      /* Expired */
 
-      if(
+      if (
         Date.now() >
         record.expiresAt
-      ){
+      ) {
 
-        otpStore.delete(
-          email
-        );
+        otpStore.delete(email);
 
+        return res.status(400).json({
 
-        return res
-          .status(400)
-          .json({
+          success: false,
 
-            success:false,
+          message:
+            "OTP has expired. Please request a new OTP."
 
-            message:
-              "OTP has expired. Please request a new OTP."
-
-          });
+        });
 
       }
 
 
-      /*
-      Attempts
-      */
+      /* Attempts */
 
       record.attempts++;
 
 
-      if(
+      if (
         record.attempts >
         MAX_ATTEMPTS
-      ){
+      ) {
 
-        otpStore.delete(
-          email
-        );
+        otpStore.delete(email);
 
+        return res.status(429).json({
 
-        return res
-          .status(429)
-          .json({
+          success: false,
 
-            success:false,
+          message:
+            "Too many incorrect attempts. Please request a new OTP."
 
-            message:
-              "Too many incorrect attempts. Please request a new OTP."
-
-          });
+        });
 
       }
 
 
-      /*
-      Hash entered OTP
-      */
+      /* Compare */
 
       const enteredHash =
         hashOTP(otp);
-
 
       const savedHash =
         record.otpHash;
 
 
-      /*
-      Secure comparison
-      */
-
       const valid =
         enteredHash.length ===
-          savedHash.length &&
-
+        savedHash.length &&
         crypto.timingSafeEqual(
-
-          Buffer.from(
-            enteredHash
-          ),
-
-          Buffer.from(
-            savedHash
-          )
-
+          Buffer.from(enteredHash),
+          Buffer.from(savedHash)
         );
 
 
-      if(!valid){
+      if (!valid) {
 
-        return res
-          .status(400)
-          .json({
+        return res.status(400).json({
 
-            success:false,
+          success: false,
 
-            message:
-              "Incorrect OTP."
+          message:
+            "Incorrect OTP."
 
-          });
+        });
 
       }
 
 
-      /*
-      OTP one-time use
-      */
+      /* One-time use */
 
-      otpStore.delete(
-        email
-      );
+      otpStore.delete(email);
 
 
-      /*
-      Success
-      */
+      return res.json({
 
-      return res
-        .status(200)
-        .json({
+        success: true,
 
-          success:true,
+        verified: true,
 
-          verified:true,
+        message:
+          "Email verified successfully."
 
-          message:
-            "Email verified successfully."
-
-        });
+      });
 
 
-    }catch(error){
+    } catch (error) {
 
       console.error(
-        "VERIFY OTP ERROR:",
+        "VERIFY ERROR:",
         error
       );
 
+      return res.status(500).json({
 
-      return res
-        .status(500)
-        .json({
+        success: false,
 
-          success:false,
+        message:
+          "Verification failed."
 
-          message:
-            "Verification failed. Please try again."
-
-        });
+      });
 
     }
 
@@ -944,120 +754,71 @@ app.post(
 );
 
 
-/*
-==================================================
-UNKNOWN API ROUTES
-==================================================
-*/
+/* ================================
+   UNKNOWN API
+================================ */
 
 app.use(
   "/api",
-  (req,res)=>{
+  (req, res) => {
 
-    res
-      .status(404)
-      .json({
+    res.status(404).json({
 
-        success:false,
+      success: false,
 
-        message:
-          "API endpoint not found."
+      message:
+        "API endpoint not found."
 
-      });
+    });
 
   }
 );
 
 
-/*
-==================================================
-GENERAL ERROR HANDLER
-==================================================
-*/
-
-app.use(
-  (err,req,res,next)=>{
-
-    console.error(
-      "SERVER ERROR:",
-      err
-    );
-
-
-    res
-      .status(500)
-      .json({
-
-        success:false,
-
-        message:
-          "Internal server error."
-
-      });
-
-  }
-);
-
-
-/*
-==================================================
-CLEANUP
-==================================================
-*/
+/* ================================
+   CLEANUP
+================================ */
 
 setInterval(
-  ()=>{
+  () => {
 
-    const now =
-      Date.now();
+    const now = Date.now();
 
 
-    /*
-    Delete expired OTPs
-    */
-
-    for(
+    for (
       const [
         email,
         record
       ]
       of otpStore.entries()
-    ){
+    ) {
 
-      if(
+      if (
         now >
         record.expiresAt
-      ){
+      ) {
 
-        otpStore.delete(
-          email
-        );
+        otpStore.delete(email);
 
       }
 
     }
 
 
-    /*
-    Delete old IP records
-    */
-
-    for(
+    for (
       const [
         ip,
         record
       ]
       of ipStore.entries()
-    ){
+    ) {
 
-      if(
+      if (
         now - record.start >
         RATE_WINDOW
-      ){
+      ) {
 
-        ipStore.delete(
-          ip
-        );
+        ipStore.delete(ip);
 
       }
 
@@ -1069,18 +830,41 @@ setInterval(
 );
 
 
-/*
-==================================================
-START
-==================================================
-*/
+/* ================================
+   START
+================================ */
 
 app.listen(
   PORT,
-  ()=>{
+  () => {
 
     console.log(
-      `hrrymodsonline OTP Gateway running on port ${PORT}`
+      "================================"
+    );
+
+    console.log(
+      "hrrymodsonline OTP Gateway"
+    );
+
+    console.log(
+      "Port:",
+      PORT
+    );
+
+    console.log(
+      "SMTP User:",
+      SMTP_USER || "NOT SET"
+    );
+
+    console.log(
+      "SMTP Password:",
+      SMTP_PASS
+        ? "SET"
+        : "NOT SET"
+    );
+
+    console.log(
+      "================================"
     );
 
   }
